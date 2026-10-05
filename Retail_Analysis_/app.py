@@ -89,7 +89,10 @@ st.bar_chart(
 
 # Customer Segmentation
 
-rfm = pd.read_csv("customer_segments.csv")
+# rfm = pd.read_csv("customer_segments.csv")
+rfm = pd.read_csv(
+    BASE_DIR / "customer_segments.csv"
+)
 
 st.subheader("👥 Customer Segmentation")
 

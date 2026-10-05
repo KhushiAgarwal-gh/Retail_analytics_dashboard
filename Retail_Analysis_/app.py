@@ -17,6 +17,7 @@ df = pd.read_csv(
     BASE_DIR / "retail_cleaned_data.csv.zip",
     compression="zip"
 )
+df["Revenue"] = df["Quantity"] * df["UnitPrice"]
 
 st.write("Dataset Preview")
 

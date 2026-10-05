@@ -19,6 +19,10 @@ df = pd.read_csv(
 )
 df["Revenue"] = df["Quantity"] * df["UnitPrice"]
 
+df["TransactionType"] = df["Quantity"].apply(
+    lambda x: "Return" if x < 0 else "Sale"
+)
+
 st.write("Dataset Preview")
 
 st.dataframe(df.head())

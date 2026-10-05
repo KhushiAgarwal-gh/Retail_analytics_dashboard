@@ -8,7 +8,15 @@ st.set_page_config(
 
 st.title("📊 Retail Analytics Dashboard")
 
-df = pd.read_csv("retail_cleaned_data.csv.zip", compression="zip")
+# df = pd.read_csv("retail_cleaned_data.csv.zip", compression="zip")
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent
+
+df = pd.read_csv(
+    BASE_DIR / "retail_cleaned_data.csv.zip",
+    compression="zip"
+)
 
 st.write("Dataset Preview")
 

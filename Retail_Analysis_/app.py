@@ -8,7 +8,7 @@ st.set_page_config(
 
 st.title("📊 Retail Analytics Dashboard")
 
-df = pd.read_csv("retail_cleaned_data.csv")
+df = pd.read_csv("retail_cleaned_data.csv.zip", compression="zip")
 
 st.write("Dataset Preview")
 

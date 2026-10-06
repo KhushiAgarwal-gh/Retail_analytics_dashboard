@@ -1,67 +1,49 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 from pathlib import Path
-from sklearn.ensemble import IsolationForest
 
 
-# ==================================================
+# ============================================================
 # PAGE CONFIG
-# ==================================================
+# ============================================================
 
 st.set_page_config(
     page_title="Retail Revenue Intelligence",
     page_icon="📊",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    layout="wide"
 )
 
 
-# ==================================================
+# ============================================================
 # CUSTOM CSS
-# ==================================================
+# ============================================================
 
 st.markdown(
     """
     <style>
 
-    /* Main background */
     .stApp {
         background-color: #f7f9fc;
     }
 
-    /* Main content */
-    .main .block-container {
-        padding-top: 2rem;
-        padding-bottom: 3rem;
-    }
-
-    /* Sidebar */
     section[data-testid="stSidebar"] {
         background-color: #111827;
     }
 
     section[data-testid="stSidebar"] * {
-        color: white;
+        color: white !important;
     }
 
-    /* Sidebar radio */
-    section[data-testid="stSidebar"]
-    div[role="radiogroup"] label {
-        padding: 8px 10px;
-        border-radius: 6px;
-    }
-
-    /* Main title */
     h1 {
-        font-weight: 700;
         color: #111827;
+        font-weight: 700;
     }
 
     h2, h3 {
         color: #1f2937;
     }
 
-    /* Metric cards */
     div[data-testid="metric-container"] {
         background-color: white;
         border: 1px solid #e5e7eb;
@@ -70,59 +52,13 @@ st.markdown(
         box-shadow: 0 2px 8px rgba(0,0,0,0.04);
     }
 
-    /* Metric label */
-    div[data-testid="stMetricLabel"] {
-        color: #6b7280;
+    div[data-testid="metric-container"] label {
+        color: #6b7280 !important;
     }
 
-    /* Metric value */
-    div[data-testid="stMetricValue"] {
-        color: #111827;
+    div[data-testid="metric-container"] [data-testid="stMetricValue"] {
+        color: #111827 !important;
         font-weight: 700;
-    }
-
-    /* Dataframes */
-    div[data-testid="stDataFrame"] {
-        border-radius: 10px;
-        overflow: hidden;
-    }
-
-    /* Buttons */
-    .stDownloadButton button {
-        border-radius: 8px;
-        font-weight: 600;
-    }
-
-    /* Divider */
-    hr {
-        margin-top: 1.5rem;
-        margin-bottom: 1.5rem;
-    }
-
-    /* Info boxes */
-    .business-box {
-        background-color: white;
-        border-left: 5px solid #2563eb;
-        padding: 16px 20px;
-        border-radius: 8px;
-        margin-bottom: 20px;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.03);
-    }
-
-    .risk-box {
-        background-color: #fff7ed;
-        border-left: 5px solid #f97316;
-        padding: 16px 20px;
-        border-radius: 8px;
-        margin-bottom: 20px;
-    }
-
-    .success-box {
-        background-color: #f0fdf4;
-        border-left: 5px solid #16a34a;
-        padding: 16px 20px;
-        border-radius: 8px;
-        margin-bottom: 20px;
     }
 
     </style>
@@ -131,101 +67,102 @@ st.markdown(
 )
 
 
-# ==================================================
-# FILE PATH
-# ==================================================
+# ============================================================
+# DATA PATH
+# ============================================================
 
 BASE_DIR = Path(__file__).resolve().parent
 
 
-# ==================================================
+# ============================================================
 # LOAD DATA
-# ==================================================
+# ============================================================
 
-df = pd.read_csv(
-    BASE_DIR / "retail_cleaned_data.csv.zip",
-    compression="zip"
-)
+@st.cache_data
+def load_data():
 
-rfm = pd.read_csv(
-    BASE_DIR / "customer_segments.csv"
-)
+    data_path = BASE_DIR / "retail_cleaned_data.csv.zip"
+    customer_path = BASE_DIR / "customer_segments.csv"
+
+    df = pd.read_csv(
+        data_path,
+        compression="zip"
+    )
+
+    rfm = pd.read_csv(customer_path)
+
+    return df, rfm
 
 
-# ==================================================
+df, rfm = load_data()
+
+
+# ============================================================
 # DATA PREPARATION
-# ==================================================
+# ============================================================
 
 df["InvoiceDate"] = pd.to_datetime(
-    df["InvoiceDate"]
+    df["InvoiceDate"],
+    errors="coerce"
 )
 
 df["Revenue"] = (
-    df["Quantity"] * df["UnitPrice"]
+    df["Quantity"] *
+    df["UnitPrice"]
 )
 
-df["TransactionType"] = df["Quantity"].apply(
-    lambda x: "Return" if x < 0 else "Sale"
+df["TransactionType"] = np.where(
+    df["Quantity"] < 0,
+    "Return",
+    "Sale"
 )
+
+
+# ============================================================
+# DUPLICATE TRANSACTION SIGNAL
+# ============================================================
 
 df["Is_Duplicate"] = df.duplicated(
     keep=False
 )
 
-df["Month"] = (
-    df["InvoiceDate"]
-    .dt.to_period("M")
-    .astype(str)
+
+# ============================================================
+# FAST ANOMALY DETECTION
+# ============================================================
+
+quantity_threshold = df["Quantity"].abs().quantile(0.99)
+
+price_threshold = df["UnitPrice"].quantile(0.99)
+
+revenue_threshold = df["Revenue"].abs().quantile(0.99)
+
+
+df["Is_Anomaly"] = (
+    (df["Quantity"].abs() >= quantity_threshold)
+    |
+    (df["UnitPrice"] >= price_threshold)
+    |
+    (df["Revenue"].abs() >= revenue_threshold)
 )
 
 
-# ==================================================
-# MACHINE LEARNING - ANOMALY DETECTION
-# ==================================================
-
-anomaly_features = df[
-    [
-        "Quantity",
-        "UnitPrice",
-        "Revenue"
-    ]
-].copy()
-
-anomaly_features = anomaly_features.replace(
-    [float("inf"), float("-inf")],
-    0
-).fillna(0)
-
-
-isolation_forest = IsolationForest(
-    n_estimators=100,
-    contamination=0.01,
-    random_state=42
-)
-
-df["Anomaly"] = isolation_forest.fit_predict(
-    anomaly_features
-)
-
-df["Is_Anomaly"] = df["Anomaly"].apply(
-    lambda x: True if x == -1 else False
-)
-
-
-# ==================================================
-# REVENUE LEAKAGE RISK SCORE
-# ==================================================
+# ============================================================
+# RISK SCORE
+# ============================================================
 
 df["Risk_Score"] = (
     df["Is_Duplicate"].astype(int) * 40
-    + df["Is_Anomaly"].astype(int) * 40
-    + (df["TransactionType"] == "Return").astype(int) * 20
+    +
+    df["Is_Anomaly"].astype(int) * 40
+    +
+    (df["TransactionType"] == "Return").astype(int) * 20
 )
 
 
-# ==================================================
+# ============================================================
 # RISK LEVEL
-# ==================================================
+# ============================================================
 
 df["Risk_Level"] = pd.cut(
     df["Risk_Score"],
@@ -238,42 +175,43 @@ df["Risk_Level"] = pd.cut(
 )
 
 
-# ==================================================
-# POTENTIAL REVENUE LEAKAGE
-# ==================================================
+# ============================================================
+# POTENTIAL LEAKAGE
+# ============================================================
 
-df["Potential_Leakage"] = df.apply(
-    lambda row: row["Revenue"]
-    if row["Risk_Level"] == "High Risk"
-    and row["Revenue"] > 0
-    else 0,
-    axis=1
+df["Potential_Leakage"] = np.where(
+    (
+        (df["Risk_Level"] == "High Risk")
+        &
+        (df["Revenue"] > 0)
+    ),
+    df["Revenue"],
+    0
 )
 
 
-# ==================================================
+# ============================================================
+# MONTH
+# ============================================================
+
+df["Month"] = df["InvoiceDate"].dt.to_period("M").astype(str)
+
+
+# ============================================================
 # SIDEBAR
-# ==================================================
+# ============================================================
+
+st.sidebar.title("📊 Retail Intelligence")
 
 st.sidebar.markdown(
-    """
-    <h2 style="color:white; margin-bottom:0;">
-    📊 Retail Intelligence
-    </h2>
-
-    <p style="color:#9ca3af;">
-    Revenue & Risk Analytics
-    </p>
-    """,
-    unsafe_allow_html=True
+    "Business analytics and revenue risk monitoring"
 )
 
-
-st.sidebar.divider()
+st.sidebar.markdown("---")
 
 
 page = st.sidebar.radio(
-    "Dashboard",
+    "Navigation",
     [
         "Executive Overview",
         "Customer Intelligence",
@@ -285,161 +223,137 @@ page = st.sidebar.radio(
 )
 
 
-# ==================================================
-# FILTERS
-# ==================================================
+# ============================================================
+# SIDEBAR FILTERS
+# ============================================================
 
-st.sidebar.divider()
+st.sidebar.markdown("---")
+st.sidebar.subheader("Filters")
 
-st.sidebar.markdown(
-    "### 🔎 Filters"
+
+countries = sorted(
+    df["Country"]
+    .dropna()
+    .unique()
+)
+
+selected_country = st.sidebar.selectbox(
+    "Country",
+    ["All Countries"] + countries
 )
 
 
-country_options = sorted(
-    df["Country"].dropna().unique()
-)
+transaction_types = [
+    "All Transactions",
+    "Sale",
+    "Return"
+]
 
-selected_countries = st.sidebar.multiselect(
-    "🌍 Country",
-    options=country_options,
-    default=country_options
-)
-
-
-transaction_options = sorted(
-    df["TransactionType"].unique()
-)
-
-selected_transactions = st.sidebar.multiselect(
-    "🔄 Transaction Type",
-    options=transaction_options,
-    default=transaction_options
+selected_transaction = st.sidebar.selectbox(
+    "Transaction Type",
+    transaction_types
 )
 
 
-risk_options = [
+risk_levels = [
+    "All Risk Levels",
     "Low Risk",
     "Medium Risk",
     "High Risk"
 ]
 
-selected_risks = st.sidebar.multiselect(
-    "⚠️ Risk Level",
-    options=risk_options,
-    default=risk_options
+selected_risk = st.sidebar.selectbox(
+    "Risk Level",
+    risk_levels
 )
 
 
-month_options = sorted(
-    df["Month"].unique()
+months = sorted(
+    df["Month"].dropna().unique()
 )
 
-selected_months = st.sidebar.multiselect(
-    "📅 Month",
-    options=month_options,
-    default=month_options
+selected_month = st.sidebar.selectbox(
+    "Month",
+    ["All Months"] + list(months)
 )
 
 
-# ==================================================
+# ============================================================
 # APPLY FILTERS
-# ==================================================
+# ============================================================
 
-filtered_df = df[
-    df["Country"].isin(selected_countries)
-    & df["TransactionType"].isin(selected_transactions)
-    & df["Risk_Level"].isin(selected_risks)
-    & df["Month"].isin(selected_months)
-].copy()
+filtered_df = df
 
 
-# ==================================================
-# SIDEBAR SUMMARY
-# ==================================================
+if selected_country != "All Countries":
 
-st.sidebar.divider()
+    filtered_df = filtered_df[
+        filtered_df["Country"] == selected_country
+    ]
 
-st.sidebar.metric(
-    "Filtered Transactions",
-    f"{len(filtered_df):,}"
+
+if selected_transaction != "All Transactions":
+
+    filtered_df = filtered_df[
+        filtered_df["TransactionType"] == selected_transaction
+    ]
+
+
+if selected_risk != "All Risk Levels":
+
+    filtered_df = filtered_df[
+        filtered_df["Risk_Level"].astype(str)
+        == selected_risk
+    ]
+
+
+if selected_month != "All Months":
+
+    filtered_df = filtered_df[
+        filtered_df["Month"] == selected_month
+    ]
+
+
+# ============================================================
+# DASHBOARD HEADER
+# ============================================================
+
+st.title("Retail Revenue Intelligence")
+
+st.caption(
+    "Executive analytics, customer intelligence and revenue "
+    "risk monitoring for retail operations"
 )
 
-st.sidebar.metric(
-    "Filtered Revenue",
-    f"£{filtered_df['Revenue'].sum():,.0f}"
+st.markdown(
+    "📊 Business Analytics  |  "
+    "⚠️ Risk Intelligence  |  "
+    "👥 Customer Insights  |  "
+    "🌍 Global Retail"
 )
 
-
-st.sidebar.caption(
-    "Use the filters to investigate specific markets, periods and risk categories."
-)
+st.markdown("---")
 
 
-# ==================================================
+# ============================================================
 # EXECUTIVE OVERVIEW
-# ==================================================
+# ============================================================
 
 if page == "Executive Overview":
 
-    st.title(
-        "Retail Revenue Intelligence"
-    )
+    st.header("Executive Overview")
 
-    st.caption(
-        "Executive view of revenue performance, customer activity and transaction risk."
-    )
+    total_revenue = filtered_df["Revenue"].sum()
+    total_orders = filtered_df["InvoiceNo"].nunique()
+    total_customers = filtered_df["CustomerID"].nunique()
+    total_transactions = len(filtered_df)
 
-
-    st.markdown(
-        """
-        <div class="business-box">
-        <b>Business Objective</b><br>
-        Monitor retail revenue performance and identify transactions that may
-        require investigation due to unusual or high-risk patterns.
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-
-    total_revenue = filtered_df[
-        "Revenue"
-    ].sum()
-
-    total_orders = filtered_df[
-        "InvoiceNo"
-    ].nunique()
-
-    total_customers = filtered_df[
-        "CustomerID"
-    ].nunique()
-
-    return_count = (
-        filtered_df["TransactionType"]
-        == "Return"
-    ).sum()
-
-    return_rate = (
-        return_count
-        / len(filtered_df)
-        * 100
-        if len(filtered_df) > 0
-        else 0
-    )
-
-    potential_leakage = filtered_df[
-        "Potential_Leakage"
-    ].sum()
-
-
-    col1, col2, col3, col4, col5 = st.columns(5)
-
+    col1, col2, col3, col4 = st.columns(4)
 
     with col1:
         st.metric(
             "Total Revenue",
-            f"£{total_revenue:,.0f}"
+            f"£{total_revenue:,.2f}"
         )
 
     with col2:
@@ -456,24 +370,12 @@ if page == "Executive Overview":
 
     with col4:
         st.metric(
-            "Return Rate",
-            f"{return_rate:.2f}%"
-        )
-
-    with col5:
-        st.metric(
-            "Potential Leakage",
-            f"£{potential_leakage:,.0f}"
+            "Transactions",
+            f"{total_transactions:,}"
         )
 
 
-    st.divider()
-
-
-    st.subheader(
-        "📈 Revenue Performance"
-    )
-
+    st.subheader("Revenue Performance")
 
     monthly_revenue = (
         filtered_df
@@ -482,202 +384,185 @@ if page == "Executive Overview":
         .reset_index()
     )
 
+    if not monthly_revenue.empty:
 
-    st.line_chart(
-        monthly_revenue,
-        x="Month",
-        y="Revenue"
-    )
+        st.line_chart(
+            monthly_revenue.set_index("Month")
+        )
+
+    else:
+
+        st.info(
+            "No data available for the selected filters."
+        )
 
 
-    st.subheader(
-        "↩️ Sales vs Returns"
-    )
+    st.subheader("Sales vs Returns")
 
-
-    return_data = (
+    transaction_summary = (
         filtered_df
         .groupby("TransactionType")["Revenue"]
         .sum()
         .reset_index()
     )
 
+    if not transaction_summary.empty:
 
-    st.bar_chart(
-        return_data,
-        x="TransactionType",
-        y="Revenue"
+        st.bar_chart(
+            transaction_summary.set_index(
+                "TransactionType"
+            )
+        )
+
+    else:
+
+        st.info(
+            "No transaction data available."
+        )
+
+
+    st.subheader("Duplicate Transaction Monitoring")
+
+    duplicate_count = int(
+        filtered_df["Is_Duplicate"].sum()
     )
 
-
-    st.subheader(
-        "⚠️ Duplicate Transaction Signals"
-    )
-
-
-    duplicate_data = filtered_df[
-        filtered_df["Is_Duplicate"]
-    ]
+    duplicate_revenue = filtered_df.loc[
+        filtered_df["Is_Duplicate"],
+        "Revenue"
+    ].sum()
 
 
-    st.write(
-        f"**{len(duplicate_data):,}** filtered rows "
-        "are exact duplicate records."
-    )
+    col1, col2 = st.columns(2)
+
+    with col1:
+
+        st.metric(
+            "Duplicate Transactions",
+            f"{duplicate_count:,}"
+        )
+
+    with col2:
+
+        st.metric(
+            "Duplicate Transaction Revenue",
+            f"£{duplicate_revenue:,.2f}"
+        )
 
 
-    st.caption(
-        "Duplicate records are investigation signals and are not automatically fraudulent."
-    )
-
-
-    st.dataframe(
-        duplicate_data[
-            [
-                "InvoiceNo",
-                "StockCode",
-                "Description",
-                "Quantity",
-                "UnitPrice",
-                "Revenue",
-                "InvoiceDate",
-                "CustomerID",
-                "Country"
-            ]
-        ].head(20),
-        use_container_width=True
-    )
-
-
-# ==================================================
+# ============================================================
 # CUSTOMER INTELLIGENCE
-# ==================================================
+# ============================================================
 
 elif page == "Customer Intelligence":
 
-    st.title(
-        "👥 Customer Intelligence"
-    )
+    st.header("Customer Intelligence")
 
-    st.caption(
-        "Understand customer value and engagement using RFM-based segmentation."
-    )
+    if rfm.empty:
 
-
-    st.markdown(
-        """
-        <div class="business-box">
-        <b>RFM Analysis</b><br>
-        Customers are segmented using Recency, Frequency and Monetary value
-        to identify valuable, regular and inactive customer groups.
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-
-    segment_count = (
-        rfm["Segment"]
-        .value_counts()
-        .reset_index()
-    )
-
-    segment_count.columns = [
-        "Segment",
-        "Customers"
-    ]
-
-
-    st.subheader(
-        "Customer Segment Distribution"
-    )
-
-
-    st.bar_chart(
-        segment_count,
-        x="Segment",
-        y="Customers"
-    )
-
-
-    st.divider()
-
-
-    selected_segment = st.selectbox(
-        "Select Customer Segment",
-        sorted(
-            rfm["Segment"].unique()
+        st.warning(
+            "Customer segmentation data is not available."
         )
-    )
+
+    else:
+
+        segment_summary = (
+            rfm["Segment"]
+            .value_counts()
+            .reset_index()
+        )
+
+        segment_summary.columns = [
+            "Segment",
+            "Customers"
+        ]
 
 
-    filtered_customers = rfm[
-        rfm["Segment"]
-        == selected_segment
-    ]
+        col1, col2 = st.columns(2)
+
+        with col1:
+
+            st.subheader(
+                "Customer Segment Distribution"
+            )
+
+            st.bar_chart(
+                segment_summary.set_index("Segment")
+            )
 
 
-    st.subheader(
-        f"{selected_segment} Customers"
-    )
+        with col2:
+
+            monetary_summary = (
+                rfm
+                .groupby("Segment")["Monetary"]
+                .sum()
+                .sort_values(
+                    ascending=False
+                )
+            )
+
+            st.subheader(
+                "Monetary Value by Segment"
+            )
+
+            st.bar_chart(
+                monetary_summary
+            )
 
 
-    col1, col2, col3 = st.columns(3)
+        st.subheader("RFM Segment Summary")
 
 
-    with col1:
-        st.metric(
-            "Customers",
-            f"{len(filtered_customers):,}"
+        segment_table = (
+            rfm
+            .groupby("Segment")
+            .agg(
+                Customers=("CustomerID", "count"),
+                Avg_Recency=("Recency", "mean"),
+                Avg_Frequency=("Frequency", "mean"),
+                Avg_Monetary=("Monetary", "mean")
+            )
+            .reset_index()
         )
 
 
-    with col2:
-        st.metric(
-            "Average Frequency",
-            f"{filtered_customers['Frequency'].mean():.1f}"
+        segment_table["Avg_Recency"] = (
+            segment_table["Avg_Recency"].round(2)
+        )
+
+        segment_table["Avg_Frequency"] = (
+            segment_table["Avg_Frequency"].round(2)
+        )
+
+        segment_table["Avg_Monetary"] = (
+            segment_table["Avg_Monetary"].round(2)
         )
 
 
-    with col3:
-        st.metric(
-            "Average Monetary Value",
-            f"£{filtered_customers['Monetary'].mean():,.0f}"
+        st.dataframe(
+            segment_table,
+            use_container_width=True,
+            hide_index=True
         )
 
 
-    st.dataframe(
-        filtered_customers,
-        use_container_width=True
-    )
+        st.subheader("Customer Segmentation Data")
+
+        st.dataframe(
+            rfm,
+            use_container_width=True,
+            hide_index=True
+        )
 
 
-    csv = filtered_customers.to_csv(
-        index=False
-    )
-
-
-    st.download_button(
-        label="📥 Download Customer Report",
-        data=csv,
-        file_name=f"{selected_segment}_customers.csv",
-        mime="text/csv"
-    )
-
-
-# ==================================================
+# ============================================================
 # PRODUCT ANALYSIS
-# ==================================================
+# ============================================================
 
 elif page == "Product Analysis":
 
-    st.title(
-        "🛒 Product Performance"
-    )
-
-    st.caption(
-        "Identify products contributing most to recorded revenue."
-    )
+    st.header("Product Analysis")
 
 
     product_revenue = (
@@ -688,52 +573,84 @@ elif page == "Product Analysis":
             ascending=False
         )
         .head(10)
+    )
+
+
+    product_quantity = (
+        filtered_df
+        .groupby("Description")["Quantity"]
+        .sum()
+        .sort_values(
+            ascending=False
+        )
+        .head(10)
+    )
+
+
+    col1, col2 = st.columns(2)
+
+
+    with col1:
+
+        st.subheader(
+            "Top Products by Revenue"
+        )
+
+        st.bar_chart(
+            product_revenue
+        )
+
+
+    with col2:
+
+        st.subheader(
+            "Top Products by Quantity"
+        )
+
+        st.bar_chart(
+            product_quantity
+        )
+
+
+    st.subheader("Product Performance Table")
+
+
+    product_table = (
+        filtered_df
+        .groupby("Description")
+        .agg(
+            Revenue=("Revenue", "sum"),
+            Quantity=("Quantity", "sum"),
+            Orders=("InvoiceNo", "nunique")
+        )
+        .sort_values(
+            "Revenue",
+            ascending=False
+        )
+        .head(50)
         .reset_index()
     )
 
 
-    product_revenue.columns = [
-        "Product",
-        "Revenue"
-    ]
-
-
-    st.subheader(
-        "Top 10 Products by Revenue"
-    )
-
-
-    st.bar_chart(
-        product_revenue,
-        x="Product",
-        y="Revenue"
-    )
-
-
-    st.subheader(
-        "Product Revenue Details"
+    product_table["Revenue"] = (
+        product_table["Revenue"].round(2)
     )
 
 
     st.dataframe(
-        product_revenue,
-        use_container_width=True
+        product_table,
+        use_container_width=True,
+        hide_index=True
     )
 
 
-# ==================================================
+# ============================================================
 # COUNTRY ANALYSIS
-# ==================================================
+# ============================================================
 
 elif page == "Country Analysis":
 
-    st.title(
-        "🌍 Geographic Performance"
-    )
-
-    st.caption(
-        "Compare revenue contribution across markets."
-    )
+    st.header("Country Analysis")
 
 
     country_revenue = (
@@ -743,92 +660,97 @@ elif page == "Country Analysis":
         .sort_values(
             ascending=False
         )
-        .head(10)
+        .head(15)
+    )
+
+
+    country_orders = (
+        filtered_df
+        .groupby("Country")["InvoiceNo"]
+        .nunique()
+        .sort_values(
+            ascending=False
+        )
+        .head(15)
+    )
+
+
+    col1, col2 = st.columns(2)
+
+
+    with col1:
+
+        st.subheader("Revenue by Country")
+
+        st.bar_chart(
+            country_revenue
+        )
+
+
+    with col2:
+
+        st.subheader("Orders by Country")
+
+        st.bar_chart(
+            country_orders
+        )
+
+
+    st.subheader("Country Performance Table")
+
+
+    country_table = (
+        filtered_df
+        .groupby("Country")
+        .agg(
+            Revenue=("Revenue", "sum"),
+            Orders=("InvoiceNo", "nunique"),
+            Transactions=("InvoiceNo", "count"),
+            Customers=("CustomerID", "nunique")
+        )
+        .sort_values(
+            "Revenue",
+            ascending=False
+        )
         .reset_index()
     )
 
 
-    country_revenue.columns = [
-        "Country",
-        "Revenue"
-    ]
-
-
-    st.subheader(
-        "Top 10 Countries by Revenue"
-    )
-
-
-    st.bar_chart(
-        country_revenue,
-        x="Country",
-        y="Revenue"
-    )
-
-
-    st.subheader(
-        "Country Revenue Details"
+    country_table["Revenue"] = (
+        country_table["Revenue"].round(2)
     )
 
 
     st.dataframe(
-        country_revenue,
-        use_container_width=True
+        country_table,
+        use_container_width=True,
+        hide_index=True
     )
 
 
-# ==================================================
+# ============================================================
 # ANOMALY MONITORING
-# ==================================================
+# ============================================================
 
 elif page == "Anomaly Monitoring":
 
-    st.title(
-        "🚨 Anomaly Monitoring"
-    )
-
-    st.caption(
-        "Machine-learning based identification of unusual transaction patterns."
-    )
+    st.header("Anomaly Monitoring")
 
 
-    st.markdown(
-        """
-        <div class="risk-box">
-        <b>Investigation Signal</b><br>
-        Isolation Forest identifies transactions that differ significantly
-        from normal transaction patterns. An anomaly is not automatically fraud.
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-
-    anomaly_data = filtered_df[
+    anomaly_df = filtered_df[
         filtered_df["Is_Anomaly"]
-    ].copy()
+    ]
 
 
-    total_transactions = len(
-        filtered_df
-    )
+    anomaly_count = len(anomaly_df)
 
-    total_anomalies = len(
-        anomaly_data
-    )
+    anomaly_revenue = anomaly_df[
+        "Revenue"
+    ].sum()
 
 
-    anomaly_rate = (
-        total_anomalies
-        / total_transactions
-        * 100
-        if total_transactions > 0
-        else 0
-    )
-
-
-    anomaly_revenue = (
-        anomaly_data["Revenue"].sum()
+    duplicate_count = int(
+        filtered_df["Is_Duplicate"].sum()
     )
 
 
@@ -836,228 +758,177 @@ elif page == "Anomaly Monitoring":
 
 
     with col1:
+
         st.metric(
-            "Potential Anomalies",
-            f"{total_anomalies:,}"
+            "Anomalous Transactions",
+            f"{anomaly_count:,}"
         )
 
 
     with col2:
+
         st.metric(
-            "Anomaly Rate",
-            f"{anomaly_rate:.2f}%"
+            "Anomaly Revenue",
+            f"£{anomaly_revenue:,.2f}"
         )
 
 
     with col3:
+
         st.metric(
-            "Anomalous Revenue",
-            f"£{anomaly_revenue:,.0f}"
+            "Duplicate Transactions",
+            f"{duplicate_count:,}"
         )
 
 
-    st.divider()
+    st.subheader("Anomalous Transaction Details")
 
 
-    st.subheader(
-        "🔎 Transactions Requiring Investigation"
-    )
+    if anomaly_df.empty:
 
+        st.info(
+            "No anomalous transactions found "
+            "for the selected filters."
+        )
 
-    display_columns = [
-        "InvoiceNo",
-        "StockCode",
-        "Description",
-        "Quantity",
-        "UnitPrice",
-        "Revenue",
-        "InvoiceDate",
-        "CustomerID",
-        "Country",
-        "TransactionType"
-    ]
+    else:
 
-
-    st.dataframe(
-        anomaly_data[
-            display_columns
-        ]
-        .sort_values(
+        anomaly_columns = [
+            "InvoiceNo",
+            "StockCode",
+            "Description",
+            "Quantity",
+            "UnitPrice",
             "Revenue",
-            ascending=False
+            "Country",
+            "InvoiceDate",
+            "Is_Duplicate",
+            "Risk_Score",
+            "Risk_Level"
+        ]
+
+
+        available_columns = [
+            col for col in anomaly_columns
+            if col in anomaly_df.columns
+        ]
+
+
+        st.dataframe(
+            anomaly_df[
+                available_columns
+            ]
+            .sort_values(
+                "Risk_Score",
+                ascending=False
+            )
+            .head(500),
+            use_container_width=True,
+            hide_index=True
         )
-        .head(100),
-        use_container_width=True
-    )
 
 
-    anomaly_csv = anomaly_data.to_csv(
-        index=False
-    )
+        report = (
+            anomaly_df[available_columns]
+            .to_csv(index=False)
+            .encode("utf-8")
+        )
 
 
-    st.download_button(
-        label="📥 Download Anomaly Report",
-        data=anomaly_csv,
-        file_name="potential_anomalies.csv",
-        mime="text/csv"
-    )
+        st.download_button(
+            "⬇️ Download Anomaly Report",
+            data=report,
+            file_name="anomaly_report.csv",
+            mime="text/csv"
+        )
 
 
-# ==================================================
+# ============================================================
 # RISK MONITORING
-# ==================================================
+# ============================================================
 
 elif page == "Risk Monitoring":
 
-    st.title(
-        "🚨 Revenue Leakage Risk Monitoring"
-    )
-
-    st.caption(
-        "Prioritize transactions for investigation using business rules and machine-learning signals."
-    )
+    st.header("Risk Monitoring")
 
 
-    st.markdown(
-        """
-        <div class="risk-box">
-        <b>How the risk engine works</b><br>
-        Risk is prioritized using duplicate transaction signals,
-        machine-learning anomalies and return activity.
-        Multiple signals increase investigation priority.
-        </div>
-        """,
-        unsafe_allow_html=True
+    potential_leakage = (
+        filtered_df["Potential_Leakage"].sum()
     )
 
 
-    high_risk_data = filtered_df[
-        filtered_df["Risk_Level"]
-        == "High Risk"
-    ].copy()
+    total_revenue = (
+        filtered_df["Revenue"].sum()
+    )
 
 
-    total_revenue = filtered_df[
+    high_risk_revenue = filtered_df.loc[
+        filtered_df["Risk_Level"] == "High Risk",
         "Revenue"
     ].sum()
 
 
-    potential_leakage = filtered_df[
-        "Potential_Leakage"
-    ].sum()
+    recovery_opportunity = filtered_df.loc[
+        filtered_df["Risk_Level"] != "Low Risk",
+        "Revenue"
+    ].clip(lower=0).sum()
 
 
-    potential_leakage_percentage = (
-        potential_leakage
-        / total_revenue
-        * 100
-        if total_revenue != 0
-        else 0
-    )
+    if total_revenue != 0:
 
+        leakage_percentage = (
+            potential_leakage /
+            abs(total_revenue)
+        ) * 100
 
-    high_risk_revenue = (
-        high_risk_data["Revenue"]
-        .clip(lower=0)
-        .sum()
-    )
+    else:
 
-
-    recovery_opportunity = (
-        high_risk_data[
-            "Potential_Leakage"
-        ].sum()
-    )
+        leakage_percentage = 0
 
 
     col1, col2, col3, col4 = st.columns(4)
 
 
     with col1:
+
         st.metric(
             "Potential Leakage",
-            f"£{potential_leakage:,.0f}"
+            f"£{potential_leakage:,.2f}"
         )
 
 
     with col2:
+
         st.metric(
-            "Leakage %",
-            f"{potential_leakage_percentage:.2f}%"
+            "Potential Leakage %",
+            f"{leakage_percentage:.4f}%"
         )
 
 
     with col3:
+
         st.metric(
             "High-Risk Revenue",
-            f"£{high_risk_revenue:,.0f}"
+            f"£{high_risk_revenue:,.2f}"
         )
 
 
     with col4:
+
         st.metric(
             "Recovery Opportunity",
-            f"£{recovery_opportunity:,.0f}"
-        )
-
-
-    st.divider()
-
-
-    # ==================================================
-    # RISK COUNTS
-    # ==================================================
-
-    low_risk = (
-        filtered_df["Risk_Level"]
-        == "Low Risk"
-    ).sum()
-
-
-    medium_risk = (
-        filtered_df["Risk_Level"]
-        == "Medium Risk"
-    ).sum()
-
-
-    high_risk = (
-        filtered_df["Risk_Level"]
-        == "High Risk"
-    ).sum()
-
-
-    col1, col2, col3 = st.columns(3)
-
-
-    with col1:
-        st.metric(
-            "Low Risk",
-            f"{low_risk:,}"
-        )
-
-
-    with col2:
-        st.metric(
-            "Medium Risk",
-            f"{medium_risk:,}"
-        )
-
-
-    with col3:
-        st.metric(
-            "High Risk",
-            f"{high_risk:,}"
+            f"£{recovery_opportunity:,.2f}"
         )
 
 
     st.subheader(
-        "📊 Risk Distribution"
+        "Revenue Leakage & Risk Monitoring"
     )
 
 
     risk_distribution = (
         filtered_df["Risk_Level"]
+        .astype(str)
         .value_counts()
         .reindex(
             [
@@ -1067,223 +938,192 @@ elif page == "Risk Monitoring":
             ],
             fill_value=0
         )
-        .reset_index()
     )
 
 
-    risk_distribution.columns = [
-        "Risk Level",
-        "Transactions"
-    ]
+    col1, col2 = st.columns(2)
 
 
-    st.bar_chart(
-        risk_distribution,
-        x="Risk Level",
-        y="Transactions"
-    )
+    with col1:
+
+        st.subheader("Risk Distribution")
+
+        st.bar_chart(
+            risk_distribution
+        )
 
 
-    st.divider()
+    with col2:
 
+        leakage_country = (
+            filtered_df
+            .groupby("Country")["Potential_Leakage"]
+            .sum()
+            .sort_values(
+                ascending=False
+            )
+            .head(10)
+        )
 
-    # ==================================================
-    # LEAKAGE BY COUNTRY
-    # ==================================================
+        st.subheader(
+            "Potential Leakage by Country"
+        )
+
+        st.bar_chart(
+            leakage_country
+        )
+
 
     st.subheader(
-        "🌍 Potential Leakage by Country"
+        "Potential Leakage by Product"
     )
 
 
-    country_leakage = (
+    leakage_product = (
         filtered_df
-        .groupby("Country")[
-            "Potential_Leakage"
-        ]
+        .groupby("Description")["Potential_Leakage"]
         .sum()
         .sort_values(
             ascending=False
         )
         .head(10)
-        .reset_index()
     )
 
 
-    country_leakage.columns = [
-        "Country",
-        "Potential Leakage"
-    ]
+    if leakage_product.sum() > 0:
 
-
-    st.bar_chart(
-        country_leakage,
-        x="Country",
-        y="Potential Leakage"
-    )
-
-
-    st.dataframe(
-        country_leakage,
-        use_container_width=True
-    )
-
-
-    st.divider()
-
-
-    # ==================================================
-    # LEAKAGE BY PRODUCT
-    # ==================================================
-
-    st.subheader(
-        "🛒 Potential Leakage by Product"
-    )
-
-
-    product_leakage = (
-        filtered_df
-        .groupby("Description")[
-            "Potential_Leakage"
-        ]
-        .sum()
-        .sort_values(
-            ascending=False
+        st.bar_chart(
+            leakage_product
         )
-        .head(10)
-        .reset_index()
-    )
 
+    else:
 
-    product_leakage.columns = [
-        "Product",
-        "Potential Leakage"
-    ]
+        st.info(
+            "No positive potential leakage identified "
+            "for the selected filters."
+        )
 
-
-    st.bar_chart(
-        product_leakage,
-        x="Product",
-        y="Potential Leakage"
-    )
-
-
-    st.dataframe(
-        product_leakage,
-        use_container_width=True
-    )
-
-
-    st.divider()
-
-
-    # ==================================================
-    # MONTHLY LEAKAGE TREND
-    # ==================================================
 
     st.subheader(
-        "📈 Monthly Potential Leakage Trend"
+        "Monthly Potential Leakage Trend"
     )
 
 
     monthly_leakage = (
         filtered_df
-        .groupby("Month")[
-            "Potential_Leakage"
-        ]
+        .groupby("Month")["Potential_Leakage"]
         .sum()
-        .reset_index()
     )
 
 
-    st.line_chart(
-        monthly_leakage,
-        x="Month",
-        y="Potential_Leakage"
-    )
+    if not monthly_leakage.empty:
+
+        st.line_chart(
+            monthly_leakage
+        )
+
+    else:
+
+        st.info(
+            "No monthly leakage data available."
+        )
 
 
-    st.divider()
+    st.subheader("Risk Scoring Logic")
 
 
-    # ==================================================
-    # POTENTIAL LEAKAGE EXPLANATION
-    # ==================================================
+    st.markdown(
+        """
+        **Risk Score Framework**
 
-    st.subheader(
-        "💰 Potential Revenue Leakage"
-    )
+        - Duplicate transaction → **+40 points**
+        - Anomalous transaction → **+40 points**
+        - Return transaction → **+20 points**
 
+        **Risk Classification**
 
-    st.write(
-        f"""
-        Based on the current investigation rules,
-        **£{potential_leakage:,.0f}**
-        is identified as potential revenue leakage.
+        - 0–39 → Low Risk
+        - 40–69 → Medium Risk
+        - 70–100 → High Risk
 
-        This represents
-        **{potential_leakage_percentage:.2f}%**
-        of filtered recorded revenue.
+        High-risk transactions are treated as **investigation
+        opportunities**, not confirmed fraud or confirmed
+        financial loss.
         """
     )
 
 
-    st.caption(
-        "This is a potential leakage estimate based on transaction risk signals. "
-        "It is not confirmed financial leakage because contractual billing prices "
-        "and invoice reconciliation data are not available in the dataset."
-    )
+    st.subheader("High-Risk Transactions")
 
 
-    # ==================================================
-    # HIGH RISK TRANSACTIONS
-    # ==================================================
-
-    st.subheader(
-        "🔍 High-Risk Transactions"
-    )
+    high_risk_df = filtered_df[
+        filtered_df["Risk_Level"] == "High Risk"
+    ].copy()
 
 
-    risk_columns = [
-        "InvoiceNo",
-        "StockCode",
-        "Description",
-        "Quantity",
-        "UnitPrice",
-        "Revenue",
-        "Potential_Leakage",
-        "InvoiceDate",
-        "CustomerID",
-        "Country",
-        "TransactionType",
-        "Is_Duplicate",
-        "Is_Anomaly",
-        "Risk_Score",
-        "Risk_Level"
-    ]
+    if high_risk_df.empty:
 
-
-    st.dataframe(
-        high_risk_data[
-            risk_columns
-        ]
-        .sort_values(
-            "Risk_Score",
-            ascending=False
+        st.info(
+            "No high-risk transactions found "
+            "for the selected filters."
         )
-        .head(100),
-        use_container_width=True
-    )
+
+    else:
+
+        risk_columns = [
+            "InvoiceNo",
+            "StockCode",
+            "Description",
+            "Quantity",
+            "UnitPrice",
+            "Revenue",
+            "Country",
+            "InvoiceDate",
+            "Is_Duplicate",
+            "Is_Anomaly",
+            "Risk_Score",
+            "Risk_Level",
+            "Potential_Leakage"
+        ]
 
 
-    risk_csv = high_risk_data.to_csv(
-        index=False
-    )
+        available_risk_columns = [
+            col for col in risk_columns
+            if col in high_risk_df.columns
+        ]
 
 
-    st.download_button(
-        label="📥 Download High-Risk Report",
-        data=risk_csv,
-        file_name="high_risk_transactions.csv",
-        mime="text/csv"
+        st.dataframe(
+            high_risk_df[
+                available_risk_columns
+            ]
+            .sort_values(
+                "Risk_Score",
+                ascending=False
+            ),
+            use_container_width=True,
+            hide_index=True
+        )
+
+
+        risk_report = (
+            high_risk_df[available_risk_columns]
+            .to_csv(index=False)
+            .encode("utf-8")
+        )
+
+
+        st.download_button(
+            "⬇️ Download High-Risk Report",
+            data=risk_report,
+            file_name="high_risk_transactions.csv",
+            mime="text/csv"
+        )
+
+
+    st.info(
+        "Business Note: Potential leakage represents "
+        "transactions that meet the defined risk criteria. "
+        "These transactions should be reviewed by the business "
+        "team before treating them as actual financial losses."
     )
